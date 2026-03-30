@@ -1,0 +1,70 @@
+<?php
+
+namespace {{ namespace }};
+
+use App\Http\Controllers\Controller;
+use Langsys\ApiKit\Traits\ApiResponse;
+use Illuminate\Http\JsonResponse;
+
+class {{ class }} extends Controller
+{
+    use ApiResponse;
+
+    /**
+     * List resources with automatic filtering, ordering, and pagination.
+     *
+     * Query parameters:
+     * - filter_by[]=field:value    Filter results
+     * - order_by[]=field:direction Order results (asc/desc)
+     * - page=1                     Page number
+     * - records_per_page=10        Items per page
+     */
+    public function index(): JsonResponse
+    {
+        // $items = YourModel::all();
+        // $resources = YourResource::collect($items);
+        // return $this->resourceListResponse($resources);
+    }
+
+    /**
+     * Show a single resource.
+     */
+    public function show(string $id): JsonResponse
+    {
+        // $model = YourModel::findOrFail($id);
+        // return $this->resourceResponse(YourResource::from($model));
+    }
+
+    /**
+     * Store a new resource using a request DTO.
+     *
+     * The RequestDtoProcessor middleware automatically:
+     * - Validates input against DTO validation attributes
+     * - Casts types via #[CastInput]
+     * - Binds models via #[BindTo]
+     */
+    // public function store(YourRequestDto $data): JsonResponse
+    // {
+    //     $model = YourModel::create($data->filled());
+    //     return $this->resourceResponse(YourResource::from($model), code: 201);
+    // }
+
+    /**
+     * Update a resource. Uses filled() for PATCH semantics.
+     */
+    // public function update(string $id, YourRequestDto $data): JsonResponse
+    // {
+    //     $model = YourModel::findOrFail($id);
+    //     $model->update($data->filled());
+    //     return $this->resourceResponse(YourResource::from($model->fresh()));
+    // }
+
+    /**
+     * Delete a resource.
+     */
+    // public function destroy(string $id): JsonResponse
+    // {
+    //     YourModel::findOrFail($id)->delete();
+    //     return $this->noContentResponse();
+    // }
+}

@@ -1,0 +1,25 @@
+<?php
+
+namespace {{ namespace }};
+
+use Langsys\ApiKit\Exceptions\BaseExceptionHandler;
+use Langsys\ApiKit\Data\ExceptionResponse;
+use Langsys\ApiKit\Enums\HttpCode;
+use Illuminate\Http\Request;
+use Throwable;
+
+class {{ class }} extends BaseExceptionHandler
+{
+    protected int $statusCode = HttpCode::INTERNAL_SERVER_ERROR->value;
+
+    public function handle(Request $request, Throwable $exception): ExceptionResponse
+    {
+        // Optionally report the error to notification channels:
+        // $this->reportError($exception);
+
+        return new ExceptionResponse(
+            message: $exception->getMessage(),
+            code: $this->statusCode
+        );
+    }
+}

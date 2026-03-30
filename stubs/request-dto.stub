@@ -1,0 +1,25 @@
+<?php
+
+namespace {{ namespace }};
+
+use Langsys\ApiKit\Data\BaseData;
+
+class {{ class }} extends BaseData
+{
+    public function __construct(
+        // Define your request properties here.
+        // All properties are optional by default for PATCH support.
+        // Use validation attributes for required fields:
+        //
+        // #[\Spatie\LaravelData\Attributes\Validation\Required]
+        // public ?string $name = null,
+        //
+        // Use #[\Langsys\ApiKit\Attributes\CastInput] for type casting:
+        // #[\Langsys\ApiKit\Attributes\CastInput]
+        // public ?int $quantity = null,
+        //
+        // Use #[\Langsys\ApiKit\Attributes\BindTo] for model binding:
+        // #[\Langsys\ApiKit\Attributes\BindTo(\App\Models\User::class)]
+        // public ?string $user_id = null,
+    ) {}
+}

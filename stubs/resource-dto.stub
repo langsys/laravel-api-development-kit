@@ -1,0 +1,18 @@
+<?php
+
+namespace {{ namespace }};
+
+use Langsys\ApiKit\Data\BaseData;
+
+class {{ class }} extends BaseData
+{
+    public function __construct(
+        // Define the shape of your API response resource.
+        // Properties map directly to the JSON response fields.
+        //
+        // public string $id,
+        // public string $name,
+        // public ?string $description,
+        // public string $created_at,
+    ) {}
+}
