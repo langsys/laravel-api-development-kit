@@ -2,18 +2,20 @@
 
 namespace Langsys\ApiKit\Traits;
 
-use Illuminate\Support\Collection;
 use Langsys\ApiKit\Contracts\ResourceMetadataResolver;
+use Langsys\ApiKit\Data\FilterByCondition;
+use Langsys\ApiKit\Data\FilterByItem;
+use Illuminate\Support\Collection;
 
 trait FilterableCollection
 {
+    private const NON_NULL_VALUES = ['!null', 'not_null'];
+
+    private const COMPARISON_OPERATORS = ['>', '<', '>=', '<='];
+
     protected function applyFiltering(Collection $collection, ?string $resourceClass = null): Collection
     {
-        if ($collection->isEmpty()) {
-            return $collection;
-        }
-
-        if (!$resourceClass) {
+        if ($collection->isEmpty() || !$resourceClass) {
             return $collection;
         }
 
@@ -26,81 +28,70 @@ trait FilterableCollection
             return $collection;
         }
 
-        $request = request();
-        $filterBy = $request->get('filter_by');
-
-        if ($filterBy && !empty($filterBy)) {
-            $filterItems = is_array($filterBy) ? $filterBy : [$filterBy];
-            $filters = $this->parseFilterBy($filterItems);
-            // Only keep filters that are allowed
-            $filters = array_intersect_key($filters, $filterableFields);
-        } else {
-            $defaultFilters = $resolver->getDefaultFilters($resourceName);
-            if (empty($defaultFilters)) {
-                return $collection;
-            }
-            $filters = $defaultFilters;
-        }
+        $filterBy = request()->get('filter_by');
+        $filters = $this->_resolveFilters($filterBy, $filterableFields, $resolver, $resourceName);
 
         if (empty($filters)) {
             return $collection;
         }
 
-        return $this->processAndApplyFilters($collection, $filters, $filterableFields);
+        return $this->_processAndApplyFilters($collection, $filters, $filterableFields);
     }
 
-    protected function processAndApplyFilters(Collection $collection, array $filters, array $filterableFields): Collection
+    private function _resolveFilters(mixed $filterBy, array $filterableFields, ResourceMetadataResolver $resolver, string $resourceName): array
     {
-        $validFilters = collect($filters)
-            ->mapWithKeys(function ($value, $fieldName) use ($filterableFields) {
-                try {
-                    $fieldTypeInfo = $filterableFields[$fieldName] ?? null;
-                    if (!$fieldTypeInfo) {
-                        return [];
-                    }
-                    $convertedValue = $this->validateAndConvertFilterValue($value, $fieldTypeInfo);
-                } catch (\Exception $e) {
-                    return [];
-                }
-                return [$fieldName => $convertedValue];
-            })
-            ->toArray();
+        if ($filterBy && !empty($filterBy)) {
+            $filterItems = is_array($filterBy) ? $filterBy : [$filterBy];
+            $filters = $this->_parseFilterBy($filterItems);
+
+            return array_intersect_key($filters, $filterableFields);
+        }
+
+        $defaultFilters = $resolver->getDefaultFilters($resourceName);
+
+        if (empty($defaultFilters)) {
+            return [];
+        }
+
+        $conditions = [];
+        foreach ($defaultFilters as $field => $value) {
+            $conditions[$field] = new FilterByCondition('=', $value);
+        }
+
+        return $conditions;
+    }
+
+    private function _processAndApplyFilters(Collection $collection, array $filters, array $filterableFields): Collection
+    {
+        $validFilters = [];
+
+        foreach ($filters as $fieldName => $condition) {
+            if ($condition->operator === '!null') {
+                $validFilters[$fieldName] = $condition;
+                continue;
+            }
+
+            $fieldTypeInfo = $filterableFields[$fieldName] ?? null;
+
+            if ($this->_isComparisonOperator($condition->operator) && !$this->_canCompare($condition, $fieldTypeInfo)) {
+                continue;
+            }
+
+            try {
+                $convertedValue = $this->_validateAndConvertFilterValue($condition->value, $fieldTypeInfo);
+                $validFilters[$fieldName] = new FilterByCondition($condition->operator, $convertedValue);
+            } catch (\Throwable) {
+                continue;
+            }
+        }
 
         if (empty($validFilters)) {
             return $collection;
         }
 
-        return $this->applyFiltersToCollection($collection, $validFilters);
-    }
-
-    protected function parseFilterBy($filterBy): array
-    {
-        $filters = [];
-
-        foreach ($filterBy as $filterItem) {
-            $parsed = $this->parseFilterItem($filterItem);
-            if ($parsed) {
-                $filters[$parsed['field']] = $parsed['value'];
-            }
-        }
-
-        return $filters;
-    }
-
-    protected function parseFilterItem(string $filterItem): ?array
-    {
-        $parts = explode(':', $filterItem, 2);
-        if (count($parts) > 1) {
-            return ['field' => trim($parts[0]), 'value' => trim($parts[1])];
-        }
-        return null;
-    }
-
-    protected function applyFiltersToCollection(Collection $collection, array $filters): Collection
-    {
-        return $collection->filter(function ($item) use ($filters) {
-            foreach ($filters as $fieldName => $value) {
-                if ($item->{$fieldName} !== $value) {
+        return $collection->filter(function ($item) use ($validFilters) {
+            foreach ($validFilters as $fieldName => $condition) {
+                if (!$condition->matches(data_get($item, $fieldName))) {
                     return false;
                 }
             }
@@ -108,7 +99,88 @@ trait FilterableCollection
         });
     }
 
-    protected function validateAndConvertFilterValue(?string $value, ?array $fieldTypeInfo): mixed
+    private function _isComparisonOperator(string $operator): bool
+    {
+        return in_array($operator, self::COMPARISON_OPERATORS, true);
+    }
+
+    private function _canCompare(FilterByCondition $condition, ?array $fieldTypeInfo): bool
+    {
+        if (!$fieldTypeInfo) {
+            return false;
+        }
+
+        $type = $fieldTypeInfo['type'] ?? null;
+
+        if (in_array($type, ['int', 'float'], true)) {
+            return true;
+        }
+
+        return $type === 'string' && is_numeric($condition->value);
+    }
+
+    /**
+     * Parse filter_by parameter into array of field => FilterByCondition
+     * Supports formats:
+     * - filter_by[]=field:value          (equality)
+     * - filter_by[]=field:!null          (non-null check)
+     * - filter_by[]=field:>:value        (comparison operators: >, <, >=, <=)
+     */
+    private function _parseFilterBy(array $filterBy): array
+    {
+        $filters = [];
+
+        foreach ($filterBy as $filterItem) {
+            if (!is_string($filterItem) || $filterItem === '') {
+                continue;
+            }
+
+            $parsed = $this->_parseFilterItem($filterItem);
+            if ($parsed) {
+                $filters[$parsed->field] = $parsed->condition;
+            }
+        }
+
+        return $filters;
+    }
+
+    private function _parseFilterItem(string $filterItem): ?FilterByItem
+    {
+        $parts = array_map('trim', explode(':', $filterItem, 3));
+
+        $fieldName = $parts[0] ?? '';
+        $a = $parts[1] ?? null;
+        $b = $parts[2] ?? null;
+
+        if ($fieldName === '' || $a === null) {
+            return null;
+        }
+
+        if ($b === null) {
+            return new FilterByItem($fieldName, $this->_conditionFromValue($a));
+        }
+
+        if ($this->_isComparisonOperator($a) && $b !== '') {
+            return new FilterByItem($fieldName, new FilterByCondition($a, $b));
+        }
+
+        if ($a === '=') {
+            return new FilterByItem($fieldName, $this->_conditionFromValue($b));
+        }
+
+        return new FilterByItem($fieldName, $this->_conditionFromValue("$a:$b"));
+    }
+
+    private function _conditionFromValue(string $value): FilterByCondition
+    {
+        if (in_array(strtolower($value), self::NON_NULL_VALUES, true)) {
+            return new FilterByCondition('!null');
+        }
+
+        return new FilterByCondition('=', $value);
+    }
+
+    private function _validateAndConvertFilterValue(?string $value, ?array $fieldTypeInfo): mixed
     {
         if (!$fieldTypeInfo) {
             throw new \Exception('Unknown field type');
@@ -124,12 +196,12 @@ trait FilterableCollection
             'int' => (int) $value,
             'float' => (float) $value,
             'bool' => in_array(strtolower($value), ['true', '1']),
-            'enum' => $this->convertToEnum($value, $fieldTypeInfo['enum'] ?? null),
+            'enum' => $this->_convertToEnum($value, $fieldTypeInfo['enum'] ?? null),
             default => $value,
         };
     }
 
-    protected function convertToEnum(?string $value, ?string $enumClass): mixed
+    private function _convertToEnum(?string $value, ?string $enumClass): mixed
     {
         if ($value === null || !$enumClass || !class_exists($enumClass) || !is_subclass_of($enumClass, \BackedEnum::class)) {
             return $value;
