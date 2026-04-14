@@ -21,10 +21,7 @@
     "autoload": {
         "psr-4": {
             "Langsys\\ApiKit\\": "src/"
-        },
-        "files": [
-            "src/helpers.php"
-        ]
+        }
     },
     "autoload-dev": {
         "psr-4": {
