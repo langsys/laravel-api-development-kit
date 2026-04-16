@@ -4,19 +4,27 @@ namespace Langsys\ApiKit\Data;
 
 abstract class BaseInternalData
 {
-    public function toArray(?array $except = []): array
+    public function toArray(bool $includeNulls = true, array $except = [], bool $includeDynamic = false): array
     {
         $reflection = new \ReflectionClass($this);
-        $properties = $reflection->getProperties(\ReflectionProperty::IS_PUBLIC);
+        $properties = $reflection->getProperties();
 
         $array = [];
+        $objectCopy = $includeDynamic ? clone $this : null;
+
         foreach ($properties as $property) {
             $name = $property->getName();
-            if (in_array($name, $except)) {
+            $property->setAccessible(true);
+
+            if ($includeDynamic) {
+                unset($objectCopy->$name);
+            }
+
+            if (!$property->isInitialized($this) || in_array($name, $except)) {
                 continue;
             }
 
-            $value = $this->{$name};
+            $value = $property->getValue($this);
 
             if ($value instanceof \BackedEnum) {
                 $value = $value->value;
@@ -26,7 +34,14 @@ abstract class BaseInternalData
                 $value = $value->toArray();
             }
 
-            $array[$name] = $value;
+            if ($includeNulls || $value !== null) {
+                $array[$name] = $value;
+            }
+        }
+
+        if ($includeDynamic) {
+            $dynamicProperties = json_decode(json_encode($objectCopy), true);
+            $array = [...$array, ...$dynamicProperties];
         }
 
         return $array;
@@ -34,6 +49,6 @@ abstract class BaseInternalData
 
     public function toJson(array $except = []): string
     {
-        return json_encode($this->toArray($except));
+        return json_encode($this->toArray(except: $except));
     }
 }

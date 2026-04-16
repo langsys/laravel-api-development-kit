@@ -10,12 +10,8 @@ class ExceptionResponse
         public ?string $redirect = null
     ) {}
 
-    public function getMessage(): string
+    public function getMessage(): string|array
     {
-        if (is_array($this->message)) {
-            return implode(' ', $this->message);
-        }
-
         return $this->message;
     }
 }
