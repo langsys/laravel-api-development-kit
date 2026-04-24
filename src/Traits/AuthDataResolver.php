@@ -10,8 +10,10 @@ trait AuthDataResolver
 {
     public function resolveAuthData(): ?AuthData
     {
+        $dataClass = config('api-kit.auth.data_class', AuthData::class);
+
         if (request()->header('Authorization') && $authId = Auth::id()) {
-            return new AuthData((string) $authId, AuthorizableType::USER);
+            return new $dataClass((string) $authId, AuthorizableType::USER);
         }
 
         $apiKeyHeader = config('api-kit.api_key.header', 'X-Authorization');
@@ -21,7 +23,7 @@ trait AuthDataResolver
         if ($headerValue && $apiKeyModelClass && method_exists($apiKeyModelClass, 'getByKey')) {
             $apiKey = $apiKeyModelClass::getByKey($headerValue);
             if ($apiKey) {
-                return new AuthData((string) $apiKey->id, AuthorizableType::API_KEY);
+                return new $dataClass((string) $apiKey->id, AuthorizableType::API_KEY);
             }
         }
 

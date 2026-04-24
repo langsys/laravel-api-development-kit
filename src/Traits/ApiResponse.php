@@ -5,6 +5,7 @@ namespace Langsys\ApiKit\Traits;
 use Langsys\ApiKit\Enums\HttpCode;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Collection;
+use Spatie\LaravelData\DataCollection;
 
 trait ApiResponse
 {
@@ -46,8 +47,12 @@ trait ApiResponse
         return $this->response($this->simpleResponse, $code);
     }
 
-    protected function resourceListResponse(Collection $resourceCollection, array $additionalData = [], int $code = 200, bool $paginated = true, bool $ordered = true, bool $filtered = true)
+    protected function resourceListResponse(Collection|DataCollection $resourceCollection, array $additionalData = [], int $code = 200, bool $paginated = true, bool $ordered = true, bool $filtered = true)
     {
+        if ($resourceCollection instanceof DataCollection) {
+            $resourceCollection = $resourceCollection->toCollection();
+        }
+
         $resourceClass = $this->inferResourceClass($resourceCollection);
 
         if ($filtered) {

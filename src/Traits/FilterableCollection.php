@@ -182,23 +182,57 @@ trait FilterableCollection
 
     private function _validateAndConvertFilterValue(?string $value, ?array $fieldTypeInfo): mixed
     {
-        if (!$fieldTypeInfo) {
-            throw new \Exception('Unknown field type');
+        if (!$fieldTypeInfo || !$this->_isValidFilterValue($value, $fieldTypeInfo)) {
+            throw new \Exception('Invalid filter value');
         }
-
-        $fieldType = $fieldTypeInfo['type'] ?? 'string';
 
         if ($value === null || $value === 'null') {
             return null;
         }
 
+        $fieldType = $fieldTypeInfo['type'] ?? 'string';
+
         return match ($fieldType) {
             'int' => (int) $value,
             'float' => (float) $value,
-            'bool' => in_array(strtolower($value), ['true', '1']),
+            'bool' => in_array(strtolower($value), ['true', '1'], true),
             'enum' => $this->_convertToEnum($value, $fieldTypeInfo['enum'] ?? null),
             default => $value,
         };
+    }
+
+    private function _isValidFilterValue(?string $value, array $fieldTypeInfo): bool
+    {
+        $fieldType = $fieldTypeInfo['type'] ?? 'string';
+
+        if ($value === null || $value === 'null') {
+            return true;
+        }
+
+        return match ($fieldType) {
+            'bool' => in_array(strtolower($value), ['true', 'false', '1', '0'], true),
+            'int' => is_numeric($value) && (int) $value == $value,
+            'float' => is_numeric($value),
+            'string' => true,
+            'enum' => $this->_isValidEnumValue($value, $fieldTypeInfo['enum'] ?? null),
+            default => false,
+        };
+    }
+
+    private function _isValidEnumValue(string $value, ?string $enumClass): bool
+    {
+        if (!$enumClass || !class_exists($enumClass) || !is_subclass_of($enumClass, \BackedEnum::class)) {
+            return false;
+        }
+
+        $reflection = new \ReflectionEnum($enumClass);
+        $backingType = $reflection->getBackingType();
+
+        $castedValue = $backingType && $backingType->getName() === 'int'
+            ? (int) $value
+            : $value;
+
+        return in_array($castedValue, array_column($enumClass::cases(), 'value'), true);
     }
 
     private function _convertToEnum(?string $value, ?string $enumClass): mixed

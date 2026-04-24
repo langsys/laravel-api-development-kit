@@ -57,6 +57,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Resource Metadata (database driver)
+    |--------------------------------------------------------------------------
+    |
+    | When using the "database" driver, the resolver reads metadata from the
+    | ApiResource eloquent model. Override "model" if your application stores
+    | ApiResource records on its own class. The model must expose the
+    | standard relations: orderableFields, filterableFields,
+    | defaultOrderEntries, defaultFilters.
+    |
+    | "resource_namespace" is used to reflect on Resource DTO constructors
+    | to infer filterable field types when the filterable_fields table does
+    | not store field_type / enum_class columns.
+    |
+    */
+    'resource_metadata' => [
+        'model' => \Langsys\ApiKit\ApiKey\Models\ApiResource::class,
+        'resource_namespace' => 'App\\Http\\Resources\\',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Pagination
     |--------------------------------------------------------------------------
     |
@@ -174,6 +195,12 @@ return [
     | Configuration related to the resolved AuthData object that is available
     | throughout the request lifecycle via the authData() helper.
     |
+    | - data_class:         Fully-qualified class used to represent resolved
+    |                       auth data. Must extend Langsys\ApiKit\Data\AuthData
+    |                       and accept the same constructor signature. Override
+    |                       this if your application needs to attach extra
+    |                       helpers (e.g. lazy-loaded User / ApiKey lookups).
+    |
     | - super_admin_check:  A callable or a fully-qualified class name that
     |                       implements the SuperAdminCheck interface. This is
     |                       used to determine whether the authenticated user
@@ -182,6 +209,7 @@ return [
     |
     */
     'auth' => [
+        'data_class' => \Langsys\ApiKit\Data\AuthData::class,
         'super_admin_check' => null,
     ],
 ];
