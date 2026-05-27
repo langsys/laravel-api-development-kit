@@ -3,95 +3,55 @@
 namespace Langsys\ApiKit\Traits;
 
 use Langsys\ApiKit\Contracts\ResourceMetadataResolver;
+use Langsys\ApiKit\Data\FieldType;
 use Langsys\ApiKit\Data\FilterByCondition;
-use Langsys\ApiKit\Data\FilterByItem;
 use Illuminate\Support\Collection;
 
 trait FilterableCollection
 {
-    private const NON_NULL_VALUES = ['!null', 'not_null'];
+    private const COMPARISON_OPS  = ['>', '<', '>=', '<='];
+    private const NUMERIC_TYPES   = ['int', 'float'];
+    private const VALUELESS_OPS   = ['null', '!null'];
+    private const DATE_FORMAT_REGEX = '/^(\d{4})-(\d{2})-(\d{2})$/';
+    private const DATE_FIELD_SUFFIXES = ['_at', '_date'];
 
-    private const COMPARISON_OPERATORS = ['>', '<', '>=', '<='];
-
+    /**
+     * Apply filtering to a resource collection based on the filter_by query parameter.
+     */
     protected function applyFiltering(Collection $collection, ?string $resourceClass = null): Collection
     {
-        if ($collection->isEmpty() || !$resourceClass) {
+        if ($collection->isEmpty()) {
             return $collection;
         }
 
-        $resolver = app(ResourceMetadataResolver::class);
-        $resourceName = class_basename($resourceClass);
+        $resourceClass ??= $this->inferResourceClassFromCollection($collection);
+        if (!$resourceClass) {
+            return $collection;
+        }
 
+        $resourceName = class_basename($resourceClass);
+        $resolver = app(ResourceMetadataResolver::class);
         $filterableFields = $resolver->getFilterableFields($resourceName);
 
         if (empty($filterableFields)) {
             return $collection;
         }
 
-        $filterBy = request()->get('filter_by');
-        $filters = $this->_resolveFilters($filterBy, $filterableFields, $resolver, $resourceName);
-
+        $filters = $this->resolveFilters($filterableFields, $resolver, $resourceName);
         if (empty($filters)) {
             return $collection;
         }
 
-        return $this->_processAndApplyFilters($collection, $filters, $filterableFields);
-    }
-
-    private function _resolveFilters(mixed $filterBy, array $filterableFields, ResourceMetadataResolver $resolver, string $resourceName): array
-    {
-        if ($filterBy && !empty($filterBy)) {
-            $filterItems = is_array($filterBy) ? $filterBy : [$filterBy];
-            $filters = $this->_parseFilterBy($filterItems);
-
-            return array_intersect_key($filters, $filterableFields);
-        }
-
-        $defaultFilters = $resolver->getDefaultFilters($resourceName);
-
-        if (empty($defaultFilters)) {
-            return [];
-        }
-
-        $conditions = [];
-        foreach ($defaultFilters as $field => $value) {
-            $conditions[$field] = new FilterByCondition('=', $value);
-        }
-
-        return $conditions;
-    }
-
-    private function _processAndApplyFilters(Collection $collection, array $filters, array $filterableFields): Collection
-    {
-        $validFilters = [];
-
-        foreach ($filters as $fieldName => $condition) {
-            if ($condition->operator === '!null') {
-                $validFilters[$fieldName] = $condition;
-                continue;
-            }
-
-            $fieldTypeInfo = $filterableFields[$fieldName] ?? null;
-
-            if ($this->_isComparisonOperator($condition->operator) && !$this->_canCompare($condition, $fieldTypeInfo)) {
-                continue;
-            }
-
-            try {
-                $convertedValue = $this->_validateAndConvertFilterValue($condition->value, $fieldTypeInfo);
-                $validFilters[$fieldName] = new FilterByCondition($condition->operator, $convertedValue);
-            } catch (\Throwable) {
-                continue;
-            }
-        }
-
+        $fieldTypes = $this->buildFieldTypes($filterableFields);
+        $validFilters = $this->convertFilters($filters, $fieldTypes);
         if (empty($validFilters)) {
             return $collection;
         }
 
         return $collection->filter(function ($item) use ($validFilters) {
-            foreach ($validFilters as $fieldName => $condition) {
-                if (!$condition->matches(data_get($item, $fieldName))) {
+            foreach ($validFilters as $field => $condition) {
+                $actual = data_get($item, $field);
+                if (!$condition->matches($actual)) {
                     return false;
                 }
             }
@@ -99,146 +59,213 @@ trait FilterableCollection
         });
     }
 
-    private function _isComparisonOperator(string $operator): bool
+    private function inferResourceClassFromCollection(Collection $collection): ?string
     {
-        return in_array($operator, self::COMPARISON_OPERATORS, true);
+        if ($collection->isEmpty()) {
+            return null;
+        }
+
+        $first = $collection->first();
+        return is_object($first) ? get_class($first) : null;
     }
 
-    private function _canCompare(FilterByCondition $condition, ?array $fieldTypeInfo): bool
+    private function buildFieldTypes(array $filterableFields): array
     {
-        if (!$fieldTypeInfo) {
-            return false;
+        $types = [];
+        foreach ($filterableFields as $field => $def) {
+            $types[$field] = $this->makeFieldType($field, is_array($def) ? $def : []);
+        }
+        return $types;
+    }
+
+    private function makeFieldType(string $name, array $def): FieldType
+    {
+        $type = $def['type'] ?? 'string';
+        $enum = $def['enum'] ?? null;
+
+        if ($type === 'enum' && is_string($enum) && class_exists($enum)) {
+            $type = $enum; // normalize so castValue + matches treat FQCN as the type
         }
 
-        $type = $fieldTypeInfo['type'] ?? null;
-
-        if (in_array($type, ['int', 'float'], true)) {
-            return true;
+        $isDate = $def['is_date'] ?? false;
+        if (!$isDate) {
+            foreach (self::DATE_FIELD_SUFFIXES as $suffix) {
+                if (str_ends_with($name, $suffix)) {
+                    $isDate = true;
+                    break;
+                }
+            }
         }
 
-        return $type === 'string' && is_numeric($condition->value);
+        return new FieldType(
+            type: $type,
+            nullable: $def['nullable'] ?? true,
+            is_date: $isDate,
+        );
     }
 
     /**
-     * Parse filter_by parameter into array of field => FilterByCondition
-     * Supports formats:
-     * - filter_by[]=field:value          (equality)
-     * - filter_by[]=field:!null          (non-null check)
-     * - filter_by[]=field:>:value        (comparison operators: >, <, >=, <=)
+     * Resolve filters from the request, or fall back to defaults stored for the resource.
+     * Returns an array keyed by field name with un-converted FilterByCondition values.
      */
-    private function _parseFilterBy(array $filterBy): array
+    private function resolveFilters(array $filterableFields, ResourceMetadataResolver $resolver, string $resourceName): array
     {
-        $filters = [];
+        $filterBy = request()->get('filter_by');
 
-        foreach ($filterBy as $filterItem) {
-            if (!is_string($filterItem) || $filterItem === '') {
+        if (empty($filterBy)) {
+            $defaultFilters = $resolver->getDefaultFilters($resourceName);
+            if (empty($defaultFilters)) {
+                return [];
+            }
+
+            $conditions = [];
+            foreach ($defaultFilters as $field => $value) {
+                $conditions[$field] = strtolower((string) $value) === 'null'
+                    ? new FilterByCondition('null')
+                    : new FilterByCondition('=', $value);
+            }
+
+            return array_intersect_key($conditions, $filterableFields);
+        }
+
+        $parsed = [];
+        foreach ((array) $filterBy as $item) {
+            if (!is_string($item)) {
                 continue;
             }
+            $result = $this->parseFilterItem($item);
+            if ($result === null) {
+                continue;
+            }
+            [$field, $condition] = $result;
+            $parsed[$field] = $condition;
+        }
 
-            $parsed = $this->_parseFilterItem($filterItem);
-            if ($parsed) {
-                $filters[$parsed->field] = $parsed->condition;
+        return array_intersect_key($parsed, $filterableFields);
+    }
+
+    /**
+     * Parse a single filter_by item. Returns [field, FilterByCondition] or null on malformed input.
+     * Grammar:
+     *   field:value          -> equality
+     *   field:null           -> is-null check
+     *   field:!null          -> not-null check
+     *   field:<op>:value     -> comparison (<op> in >, <, >=, <=)
+     */
+    private function parseFilterItem(string $item): ?array
+    {
+        $parts = array_map('trim', explode(':', $item, 3));
+        $field = $parts[0] ?? '';
+        $a     = $parts[1] ?? '';
+        $b     = $parts[2] ?? null;
+
+        if ($field === '' || $a === '') {
+            return null;
+        }
+
+        if ($b !== null) {
+            if (!in_array($a, self::COMPARISON_OPS, true) || $b === '') {
+                return null;
+            }
+            return [$field, new FilterByCondition($a, $b)];
+        }
+
+        $op = strtolower($a);
+        if (in_array($op, self::VALUELESS_OPS, true)) {
+            return [$field, new FilterByCondition($op)];
+        }
+
+        return [$field, new FilterByCondition('=', $a)];
+    }
+
+    /**
+     * Type-check and cast filter values against the Resource's typed properties.
+     * Filters that can't be converted are dropped silently.
+     */
+    private function convertFilters(array $filters, array $fieldTypes): array
+    {
+        $valid = [];
+        foreach ($filters as $field => $condition) {
+            $fieldType = $fieldTypes[$field] ?? null;
+            if (!$fieldType) {
+                continue;
+            }
+            $converted = $this->convertCondition($condition, $fieldType);
+            if ($converted !== null) {
+                $valid[$field] = $converted;
             }
         }
-
-        return $filters;
+        return $valid;
     }
 
-    private function _parseFilterItem(string $filterItem): ?FilterByItem
+    private function convertCondition(FilterByCondition $condition, FieldType $fieldType): ?FilterByCondition
     {
-        $parts = array_map('trim', explode(':', $filterItem, 3));
+        $isComparison = in_array($condition->operator, self::COMPARISON_OPS, true);
 
-        $fieldName = $parts[0] ?? '';
-        $a = $parts[1] ?? null;
-        $b = $parts[2] ?? null;
+        // Date comparison: only triggers when the property is a date field
+        // (CoC `_at`/`_date` suffix or explicit is_date) and the value
+        // matches strict YYYY-MM-DD AND is a real calendar date.
+        if ($isComparison && $fieldType->is_date && is_string($condition->value)
+            && preg_match(self::DATE_FORMAT_REGEX, $condition->value, $parts) === 1
+            && checkdate((int) $parts[2], (int) $parts[3], (int) $parts[1])
+        ) {
+            return new FilterByCondition(
+                $condition->operator,
+                strtotime($condition->value),
+                compare_as_timestamp: $fieldType->type === 'string',
+            );
+        }
 
-        if ($fieldName === '' || $a === null) {
+        if ($isComparison && !in_array($fieldType->type, self::NUMERIC_TYPES, true)) {
+            // Non-numeric (and non-date) comparisons are not supported.
             return null;
         }
 
-        if ($b === null) {
-            return new FilterByItem($fieldName, $this->_conditionFromValue($a));
-        }
-
-        if ($this->_isComparisonOperator($a) && $b !== '') {
-            return new FilterByItem($fieldName, new FilterByCondition($a, $b));
-        }
-
-        if ($a === '=') {
-            return new FilterByItem($fieldName, $this->_conditionFromValue($b));
-        }
-
-        return new FilterByItem($fieldName, $this->_conditionFromValue("$a:$b"));
-    }
-
-    private function _conditionFromValue(string $value): FilterByCondition
-    {
-        if (in_array(strtolower($value), self::NON_NULL_VALUES, true)) {
-            return new FilterByCondition('!null');
-        }
-
-        return new FilterByCondition('=', $value);
-    }
-
-    private function _validateAndConvertFilterValue(?string $value, ?array $fieldTypeInfo): mixed
-    {
-        if (!$fieldTypeInfo || !$this->_isValidFilterValue($value, $fieldTypeInfo)) {
-            throw new \Exception('Invalid filter value');
-        }
-
-        if ($value === null || $value === 'null') {
+        if (!$this->validateFilterValueForType($condition->value, $fieldType)) {
             return null;
         }
 
-        $fieldType = $fieldTypeInfo['type'] ?? 'string';
-
-        return match ($fieldType) {
-            'int' => (int) $value,
-            'float' => (float) $value,
-            'bool' => in_array(strtolower($value), ['true', '1'], true),
-            'enum' => $this->_convertToEnum($value, $fieldTypeInfo['enum'] ?? null),
-            default => $value,
-        };
-    }
-
-    private function _isValidFilterValue(?string $value, array $fieldTypeInfo): bool
-    {
-        $fieldType = $fieldTypeInfo['type'] ?? 'string';
-
-        if ($value === null || $value === 'null') {
-            return true;
+        // null / !null carry no value to cast — preserve the condition as-is
+        // so matches() can use its operator-side comparison.
+        if (in_array($condition->operator, self::VALUELESS_OPS, true)) {
+            return $condition;
         }
 
-        return match ($fieldType) {
-            'bool' => in_array(strtolower($value), ['true', 'false', '1', '0'], true),
-            'int' => is_numeric($value) && (int) $value == $value,
-            'float' => is_numeric($value),
-            'string' => true,
-            'enum' => $this->_isValidEnumValue($value, $fieldTypeInfo['enum'] ?? null),
-            default => false,
-        };
+        return new FilterByCondition($condition->operator, $this->castValue($condition->value, $fieldType->type));
     }
 
-    private function _isValidEnumValue(string $value, ?string $enumClass): bool
+    private function validateFilterValueForType(?string $value, FieldType $fieldType): bool
     {
-        if (!$enumClass || !class_exists($enumClass) || !is_subclass_of($enumClass, \BackedEnum::class)) {
-            return false;
+        if ($value === null || strtolower((string) $value) === 'null') {
+            return $fieldType->nullable;
         }
 
-        $reflection = new \ReflectionEnum($enumClass);
-        $backingType = $reflection->getBackingType();
+        $type = $fieldType->type;
 
-        $castedValue = $backingType && $backingType->getName() === 'int'
-            ? (int) $value
-            : $value;
-
-        return in_array($castedValue, array_column($enumClass::cases(), 'value'), true);
+        switch ($type) {
+            case 'bool':
+                $validBooleanValues = ['true', 'false', '1', '0'];
+                return in_array(strtolower($value), $validBooleanValues);
+            case 'int':
+                return is_numeric($value) && (int)$value == $value;
+            case 'float':
+                return is_numeric($value);
+            case 'string':
+                return true;
+            default:
+                if (class_exists($type) && is_subclass_of($type, \BackedEnum::class)) {
+                    $enumValues = array_column($type::cases(), 'value');
+                    $castedValue = $this->castValueToEnumType($value, $type);
+                    return in_array($castedValue, $enumValues);
+                }
+                return false;
+        }
     }
 
-    private function _convertToEnum(?string $value, ?string $enumClass): mixed
+    private function castValueToEnumType(?string $value, string $enumClass): mixed
     {
-        if ($value === null || !$enumClass || !class_exists($enumClass) || !is_subclass_of($enumClass, \BackedEnum::class)) {
-            return $value;
+        if ($value === null) {
+            return null;
         }
 
         $reflection = new \ReflectionEnum($enumClass);
@@ -248,11 +275,23 @@ trait FilterableCollection
             return $value;
         }
 
-        $castedValue = match ($backingType->getName()) {
+        return match ($backingType->getName()) {
             'int' => (int) $value,
-            default => $value,
+            'string' => $value,
+            default => $value
         };
+    }
 
-        return $enumClass::from($castedValue);
+    private function castValue(string $value, string $type): mixed
+    {
+        return match ($type) {
+            'int'    => (int) $value,
+            'float'  => (float) $value,
+            'bool'   => in_array(strtolower($value), ['true', '1'], true),
+            'string' => $value,
+            default  => (class_exists($type) && is_subclass_of($type, \BackedEnum::class))
+                ? $type::from($this->castValueToEnumType($value, $type))
+                : $value,
+        };
     }
 }

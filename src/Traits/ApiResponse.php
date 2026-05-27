@@ -96,7 +96,7 @@ trait ApiResponse
         return $this->response($this->errorResponse, $code);
     }
 
-    protected function noContentResponse(): JsonResponse
+    protected function noContentResponse($code = 204): JsonResponse
     {
         return $this->response([], HttpCode::NO_CONTENT->value);
     }
